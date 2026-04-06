@@ -1,0 +1,17 @@
+# Node.js
+node_modules/
+
+# Environment Variables
+.env
+
+# Build Folders
+build/
+
+# IDE Configurations
+.vscode/
+.idea/
+*.sublime-workspace
+*.sublime-project
+# Logs
+logs/
+npm-debug.log*
