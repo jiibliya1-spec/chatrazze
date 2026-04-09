@@ -1,0 +1,8 @@
+uploads = []
+outputs = []
+
+[[generated]]
+id = "uGi5OybpuOaU19v_jcNZt"
+uri = "file://artifacts/chat-app/assets/images/icon.png"
+type = "image"
+title = "chat app icon"
