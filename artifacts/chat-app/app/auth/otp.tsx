@@ -74,12 +74,9 @@ export default function OtpScreen() {
           onChangeText={setCode}
           keyboardType="number-pad"
           maxLength={6}
-          style={[styles.codeInput, { color: colors.foreground }]}
+          style={[styles.codeInput, { color: colors.foreground, letterSpacing: 12, fontSize: 28, fontWeight: "700" }]}
           autoFocus
           textAlign="center"
-          letterSpacing={12}
-          fontSize={28}
-          fontWeight="700"
         />
       </Pressable>
 
