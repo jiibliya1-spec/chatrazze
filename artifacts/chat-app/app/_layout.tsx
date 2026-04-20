@@ -32,15 +32,6 @@ if (__DEV__) {
 
 const queryClient = new QueryClient();
 
-function PlatformKeyboardProvider({ children }: { children: React.ReactNode }) {
-  if (Platform.OS === "web") {
-    return <>{children}</>;
-  }
-
-  const { KeyboardProvider } = require("react-native-keyboard-controller") as typeof import("react-native-keyboard-controller");
-  return <KeyboardProvider>{children}</KeyboardProvider>;
-}
-
 function RootLayoutNav() {
   const { loading } = useAuth();
 
@@ -87,7 +78,7 @@ export default function RootLayout() {
     }
   }, [fontsLoaded, fontError]);
 
-  if (!fontsLoaded && !fontError) return null;
+  if (!fontsLoaded && !fontError && Platform.OS !== "web") return null;
 
   return (
     <SafeAreaProvider>
@@ -97,11 +88,9 @@ export default function RootLayout() {
             <ErrorBoundary>
               <QueryClientProvider client={queryClient}>
                 <GestureHandlerRootView style={{ flex: 1 }}>
-                  <PlatformKeyboardProvider>
-                    <AuthProvider>
-                      <RootLayoutNav />
-                    </AuthProvider>
-                  </PlatformKeyboardProvider>
+                  <AuthProvider>
+                    <RootLayoutNav />
+                  </AuthProvider>
                 </GestureHandlerRootView>
               </QueryClientProvider>
             </ErrorBoundary>

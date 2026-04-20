@@ -1,6 +1,6 @@
 import React, { createContext, useCallback, useContext, useEffect, useState } from "react";
 import { Session, User as SupabaseUser } from "@supabase/supabase-js";
-import { supabase } from "@/lib/supabase";
+import { isSupabaseConfigured, supabase } from "@/lib/supabase";
 import { User } from "@/types";
 
 interface AuthContextType {
@@ -49,6 +49,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     const initAuth = async () => {
+      if (!isSupabaseConfigured) {
+        setSession(null);
+        setSupabaseUser(null);
+        setUser(null);
+        setLoading(false);
+        return;
+      }
+
       try {
         const { data: { session } } = await supabase.auth.getSession();
         setSession(session);
@@ -62,6 +70,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     };
 
     initAuth();
+
+    if (!isSupabaseConfigured) {
+      return;
+    }
 
     const { data: listener } = supabase.auth.onAuthStateChange(async (_event, session) => {
       setSession(session);
@@ -84,16 +96,28 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [fetchUserProfile]);
 
   const signInWithPhone = async (phone: string) => {
+    if (!isSupabaseConfigured) {
+      return { error: "Supabase is not configured. Set EXPO_PUBLIC_SUPABASE_URL and EXPO_PUBLIC_SUPABASE_ANON_KEY." };
+    }
     const { error } = await supabase.auth.signInWithOtp({ phone });
     return { error: error?.message ?? null };
   };
 
   const verifyOtp = async (phone: string, token: string) => {
+    if (!isSupabaseConfigured) {
+      return { error: "Supabase is not configured. Set EXPO_PUBLIC_SUPABASE_URL and EXPO_PUBLIC_SUPABASE_ANON_KEY." };
+    }
     const { error, data } = await supabase.auth.verifyOtp({ phone, token, type: "sms" });
     return { error: error?.message ?? null };
   };
 
   const signOut = async () => {
+    if (!isSupabaseConfigured) {
+      setSession(null);
+      setSupabaseUser(null);
+      setUser(null);
+      return;
+    }
     if (supabaseUser) {
       await supabase.from("users").update({ is_online: false, last_seen: new Date().toISOString() }).eq("id", supabaseUser.id);
     }
@@ -101,6 +125,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   const refreshUser = async () => {
+    if (!isSupabaseConfigured) return;
     if (supabaseUser) await fetchUserProfile(supabaseUser.id, supabaseUser);
   };
 
