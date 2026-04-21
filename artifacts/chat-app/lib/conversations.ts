@@ -31,6 +31,51 @@ function isMissingRelationError(error: unknown) {
   return message.includes("does not exist") || message.includes("relation") || message.includes("column") || message.includes("schema cache");
 }
 
+export async function autoCreateContactsIfNeeded(currentUserId: string, otherUserId: string): Promise<void> {
+  try {
+    // Check if contact already exists in one direction
+    const { data: existingContact, error: existingContactError } = await withTimeout(
+      supabase
+        .from("contacts")
+        .select("id")
+        .eq("user_id", currentUserId)
+        .eq("contact_id", otherUserId)
+        .maybeSingle(),
+      "Check existing contact"
+    );
+
+    if (existingContactError) {
+      console.error("[autoCreateContactsIfNeeded] failed to check existing contact", existingContactError);
+      return;
+    }
+
+    if (existingContact) {
+      console.log("[autoCreateContactsIfNeeded] contact already exists");
+      return;
+    }
+
+    console.log("[autoCreateContactsIfNeeded] AUTO CREATE CONTACT");
+
+    // Create bidirectional contact relationship
+    const { error: insertError } = await withTimeout(
+      supabase.from("contacts").insert([
+        { user_id: currentUserId, contact_id: otherUserId, status: "accepted" },
+        { user_id: otherUserId, contact_id: currentUserId, status: "accepted" },
+      ]),
+      "Create bidirectional contacts"
+    );
+
+    if (insertError) {
+      console.error("[autoCreateContactsIfNeeded] failed to insert contacts", insertError);
+      return;
+    }
+
+    console.log("[autoCreateContactsIfNeeded] contacts created successfully");
+  } catch (error) {
+    console.error("[autoCreateContactsIfNeeded] unexpected error", error);
+  }
+}
+
 export async function withTimeout<T>(operation: PromiseLike<T>, label: string, timeoutMs = DEFAULT_TIMEOUT_MS): Promise<T> {
   let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
   try {

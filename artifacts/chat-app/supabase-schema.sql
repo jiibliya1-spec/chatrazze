@@ -111,6 +111,9 @@ CREATE TABLE IF NOT EXISTS public.contacts (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   user_id UUID REFERENCES public.users(id) ON DELETE CASCADE,
   contact_id UUID REFERENCES public.users(id) ON DELETE CASCADE,
+  status TEXT CHECK (status IN ('pending', 'accepted', 'rejected')) DEFAULT 'accepted',
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW(),
   UNIQUE(user_id, contact_id)
 );
 

@@ -17,7 +17,7 @@ import { Avatar } from "@/components/Avatar";
 import { useAuth } from "@/contexts/AuthContext";
 import { useI18n } from "@/contexts/I18nContext";
 import { useColors } from "@/hooks/useColors";
-import { getOrCreateDirectConversation } from "@/lib/conversations";
+import { autoCreateContactsIfNeeded, getOrCreateDirectConversation } from "@/lib/conversations";
 import { supabase } from "@/lib/supabase";
 import { User } from "@/types";
 
@@ -89,6 +89,9 @@ export default function NewChatScreen() {
         throw new Error("Unable to resolve authenticated user id");
       }
 
+      // Auto-create contact relationship if it doesn't exist
+      await autoCreateContactsIfNeeded(currentUserId, otherUserId);
+
       const { conversationId } = await getOrCreateDirectConversation(currentUserId, otherUserId);
 
       if (!conversationId) {
@@ -97,8 +100,7 @@ export default function NewChatScreen() {
 
       console.log("Conversation found or created:", conversationId);
       console.log("CONVERSATION ID", conversationId);
-      console.log("NAVIGATING");
-      console.log("NAVIGATING TO", conversationId);
+      console.log("NAVIGATE TO CHAT", conversationId);
       router.push(`/chat/${conversationId}`);
     } catch (error) {
       console.error("[NewChat] openChat failed", error);
