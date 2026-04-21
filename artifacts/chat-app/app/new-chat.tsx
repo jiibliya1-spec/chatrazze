@@ -44,27 +44,29 @@ export default function NewChatScreen() {
   useEffect(() => {
     const fetchUsers = async () => {
       setLoading(true);
-      let query = supabase.from("users").select("*").neq("id", user?.id ?? "");
-      if (search.trim()) {
-        query = query.or(
-          `display_name.ilike.%${search.trim()}%,phone.ilike.%${search.trim()}%,email.ilike.%${search.trim()}%`
-        );
+      try {
+        let query = supabase.from("users").select("*").neq("id", user?.id ?? "");
+        if (search.trim()) {
+          query = query.or(
+            `display_name.ilike.%${search.trim()}%,phone.ilike.%${search.trim()}%,email.ilike.%${search.trim()}%`
+          );
+        }
+        const { data, error } = await query.order("display_name", { ascending: true }).limit(50);
+        if (error) {
+          console.error("[NewChat] failed loading users", error);
+          setUsers([]);
+          return;
+        }
+        setUsers((data as User[]) ?? []);
+      } finally {
+        setLoading(false);
       }
-      const { data } = await query.order("display_name", { ascending: true }).limit(50);
-      setUsers((data as User[]) ?? []);
-      setLoading(false);
     };
     const timer = setTimeout(fetchUsers, 300);
     return () => clearTimeout(timer);
   }, [search, user?.id]);
 
   const openChat = async (otherUserId: string) => {
-    if (!user) {
-      console.warn("[NewChat] openChat called without authenticated user");
-      Alert.alert("Unable to start chat", "You are not signed in.");
-      return;
-    }
-
     if (creating) {
       console.log("[NewChat] ignoring click while request is already in progress", { creating });
       return;
@@ -76,13 +78,26 @@ export default function NewChatScreen() {
     setLoading(true);
 
     try {
-      const { conversationId } = await getOrCreateDirectConversation(user.id, otherUserId);
+      const { data: authData, error: authError } = await supabase.auth.getUser();
+      if (authError) {
+        console.error("[NewChat] failed to refresh authenticated user", authError);
+        throw authError;
+      }
+
+      const currentUserId = authData.user?.id ?? user?.id;
+      if (!currentUserId) {
+        throw new Error("Unable to resolve authenticated user id");
+      }
+
+      const { conversationId } = await getOrCreateDirectConversation(currentUserId, otherUserId);
 
       if (!conversationId) {
         throw new Error("Could not resolve a conversation id");
       }
 
       console.log("Conversation found or created:", conversationId);
+      console.log("CONVERSATION ID", conversationId);
+      console.log("NAVIGATING");
       console.log("NAVIGATING TO", conversationId);
       router.push(`/chat/${conversationId}`);
     } catch (error) {

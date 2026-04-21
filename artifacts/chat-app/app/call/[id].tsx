@@ -3,6 +3,7 @@ import { router, useLocalSearchParams } from "expo-router";
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
+  Alert,
   Platform,
   Pressable,
   StyleSheet,
@@ -32,10 +33,14 @@ export default function CallScreen() {
   const [muted, setMuted] = useState(false);
   const [speaker, setSpeaker] = useState(false);
   const [callee, setCallee] = useState<User | null>(null);
+  const [incoming, setIncoming] = useState(false);
+  const [cameraReady, setCameraReady] = useState(false);
   const [duration, setDuration] = useState(0);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const callIdRef = useRef<string | null>(null);
   const channelRef = useRef<any>(null);
+  const localStreamRef = useRef<MediaStream | null>(null);
+  const localVideoRef = useRef<HTMLVideoElement | null>(null);
 
   const goBackOrChats = useCallback(() => {
     if (router.canGoBack()) {
@@ -51,50 +56,136 @@ export default function CallScreen() {
   // Fetch callee user
   useEffect(() => {
     if (!calleeId) return;
-    supabase.from("users").select("*").eq("id", calleeId).single().then(({ data }) => {
-      if (data) setCallee(data as User);
-    });
+    const fetchCallee = async () => {
+      try {
+        const { data, error } = await supabase.from("users").select("*").eq("id", calleeId).single();
+        if (error) {
+          console.error("[CallScreen] failed loading callee", error);
+          return;
+        }
+        if (data) {
+          setCallee(data as User);
+        }
+      } catch (error) {
+        console.error("[CallScreen] unexpected callee load error", error);
+      }
+    };
+    fetchCallee();
   }, [calleeId]);
+
+  useEffect(() => {
+    if (Platform.OS !== "web" || type !== "video") {
+      return;
+    }
+
+    let cancelled = false;
+
+    const startCamera = async () => {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+        if (cancelled) {
+          stream.getTracks().forEach((track) => track.stop());
+          return;
+        }
+        localStreamRef.current = stream;
+        setCameraReady(true);
+        if (localVideoRef.current) {
+          localVideoRef.current.srcObject = stream;
+          localVideoRef.current.muted = true;
+          localVideoRef.current.play().catch((error) => {
+            console.error("[CallScreen] local video autoplay failed", error);
+          });
+        }
+      } catch (error) {
+        console.error("[CallScreen] camera initialization failed", error);
+        Alert.alert("Camera unavailable", "Could not access camera/microphone.");
+      }
+    };
+
+    startCamera();
+
+    return () => {
+      cancelled = true;
+      if (localStreamRef.current) {
+        localStreamRef.current.getTracks().forEach((track) => track.stop());
+        localStreamRef.current = null;
+      }
+      setCameraReady(false);
+    };
+  }, [type]);
 
   // Subscribe to call signaling via Supabase Realtime
   useEffect(() => {
     if (!user || !chatId) return;
 
     const setupCall = async () => {
-      // Insert call record into 'calls' table (signaling scaffold)
-      const { data: callRow } = await supabase.from("calls").insert({
-        chat_id: chatId,
-        caller_id: user.id,
-        callee_id: calleeId,
-        type,
-        status: "calling",
-      }).select().single();
+      try {
+        const { data: existingIncoming, error: existingIncomingError } = await supabase
+          .from("calls")
+          .select("*")
+          .eq("chat_id", chatId)
+          .eq("callee_id", user.id)
+          .in("status", ["calling", "ringing"])
+          .order("started_at", { ascending: false })
+          .limit(1)
+          .maybeSingle();
 
-      if (callRow) {
-        callIdRef.current = callRow.id;
-        setStatus("ringing");
-      }
+        if (existingIncomingError) {
+          console.error("[CallScreen] failed checking incoming call", existingIncomingError);
+        }
 
-      // Subscribe to real-time updates on this call
-      const channel = supabase
-        .channel(`call-${chatId}`)
-        .on("postgres_changes", {
-          event: "UPDATE",
-          schema: "public",
-          table: "calls",
-          filter: callIdRef.current ? `id=eq.${callIdRef.current}` : undefined,
-        }, (payload: any) => {
-          const updated = payload.new;
-          if (updated.status === "connected") {
-            setStatus("active");
-            timerRef.current = setInterval(() => setDuration((d) => d + 1), 1000);
-          } else if (updated.status === "ended" || updated.status === "declined") {
-            endCall(false);
+        if (existingIncoming?.id) {
+          callIdRef.current = existingIncoming.id;
+          setIncoming(true);
+          setStatus("ringing");
+        } else {
+          const { data: callRow, error: createCallError } = await supabase.from("calls").insert({
+            chat_id: chatId,
+            caller_id: user.id,
+            callee_id: calleeId,
+            type,
+            status: "calling",
+          }).select().single();
+
+          if (createCallError) {
+            console.error("[CallScreen] failed creating call", createCallError);
+            Alert.alert("Call failed", "Unable to start call.");
+            setTimeout(() => goBackOrChats(), 300);
+            return;
           }
-        })
-        .subscribe();
 
-      channelRef.current = channel;
+          if (callRow?.id) {
+            callIdRef.current = callRow.id;
+            setStatus("ringing");
+          }
+        }
+
+        const channel = supabase
+          .channel(`call-${chatId}`)
+          .on("postgres_changes", {
+            event: "UPDATE",
+            schema: "public",
+            table: "calls",
+            filter: callIdRef.current ? `id=eq.${callIdRef.current}` : undefined,
+          }, (payload: any) => {
+            const updated = payload.new;
+            if (updated.status === "connected") {
+              setStatus("active");
+              setIncoming(false);
+              if (!timerRef.current) {
+                timerRef.current = setInterval(() => setDuration((d) => d + 1), 1000);
+              }
+            } else if (updated.status === "ended" || updated.status === "declined") {
+              endCall(false);
+            }
+          })
+          .subscribe();
+
+        channelRef.current = channel;
+      } catch (error) {
+        console.error("[CallScreen] setup call failed", error);
+        Alert.alert("Call error", "Unable to set up call.");
+      }
     };
 
     setupCall();
@@ -104,25 +195,59 @@ export default function CallScreen() {
     };
   }, [user, chatId]);
 
-  // Auto-connect after 3s for demo purposes (simulates callee accepting)
+  // Auto-connect after 3s for outgoing demo signaling.
   useEffect(() => {
     const timeout = setTimeout(() => {
-      if (status === "ringing") {
+      if (status === "ringing" && !incoming) {
         setStatus("active");
         timerRef.current = setInterval(() => setDuration((d) => d + 1), 1000);
       }
     }, 3000);
     return () => clearTimeout(timeout);
-  }, [status]);
+  }, [incoming, status]);
+
+  const acceptIncomingCall = useCallback(async () => {
+    if (!callIdRef.current) {
+      return;
+    }
+    try {
+      const { error } = await supabase
+        .from("calls")
+        .update({ status: "connected" })
+        .eq("id", callIdRef.current);
+      if (error) {
+        console.error("[CallScreen] failed to accept call", error);
+        Alert.alert("Call error", "Unable to accept call.");
+        return;
+      }
+      setIncoming(false);
+      setStatus("active");
+      if (!timerRef.current) {
+        timerRef.current = setInterval(() => setDuration((d) => d + 1), 1000);
+      }
+    } catch (error) {
+      console.error("[CallScreen] acceptIncomingCall failed", error);
+    }
+  }, []);
 
   const endCall = useCallback(async (updateDB = true) => {
     if (timerRef.current) clearInterval(timerRef.current);
     setStatus("ended");
-    if (updateDB && callIdRef.current) {
-      await supabase.from("calls").update({ status: "ended", ended_at: new Date().toISOString() }).eq("id", callIdRef.current);
+    try {
+      if (updateDB && callIdRef.current) {
+        const { error } = await supabase.from("calls").update({ status: "ended", ended_at: new Date().toISOString() }).eq("id", callIdRef.current);
+        if (error) {
+          console.error("[CallScreen] failed to end call in DB", error);
+        }
+      }
+    } finally {
+      if (localStreamRef.current) {
+        localStreamRef.current.getTracks().forEach((track) => track.stop());
+        localStreamRef.current = null;
+      }
+      channelRef.current?.unsubscribe();
+      setTimeout(() => goBackOrChats(), 500);
     }
-    channelRef.current?.unsubscribe();
-    setTimeout(() => goBackOrChats(), 500);
   }, [goBackOrChats]);
 
   const formatDuration = (secs: number) => {
@@ -146,7 +271,32 @@ export default function CallScreen() {
         <Text style={styles.calleeName}>{callee?.display_name || callee?.phone || "…"}</Text>
         <Text style={styles.callStatus}>{statusLabel}</Text>
         <Text style={styles.callType}>{type === "video" ? "Video call" : "Voice call"}</Text>
+        {incoming && (
+          <Pressable onPress={acceptIncomingCall} style={styles.acceptBtn}>
+            <Text style={styles.acceptBtnText}>Accept</Text>
+          </Pressable>
+        )}
       </View>
+
+      {Platform.OS === "web" && type === "video" && (
+        <View style={styles.videoWrap}>
+          <video
+            ref={(node) => {
+              localVideoRef.current = node;
+              if (node && localStreamRef.current) {
+                node.srcObject = localStreamRef.current;
+              }
+            }}
+            autoPlay
+            muted
+            playsInline
+            style={{ width: 150, height: 220, borderRadius: 12, backgroundColor: "#000" }}
+          />
+          <View style={styles.remoteVideoPlaceholder}>
+            <Text style={styles.remoteVideoPlaceholderText}>{cameraReady ? "Remote video placeholder" : "Waiting for camera..."}</Text>
+          </View>
+        </View>
+      )}
 
       {status === "connecting" && (
         <View style={styles.center}>
@@ -196,6 +346,29 @@ const styles = StyleSheet.create({
   calleeName: { color: "white", fontSize: 28, fontWeight: "700" },
   callStatus: { color: "rgba(255,255,255,0.75)", fontSize: 18 },
   callType: { color: "rgba(255,255,255,0.55)", fontSize: 14, marginTop: -6 },
+  acceptBtn: {
+    marginTop: 10,
+    backgroundColor: "#1D9A6C",
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 10,
+  },
+  acceptBtnText: { color: "white", fontSize: 14, fontWeight: "700" },
+  videoWrap: {
+    alignItems: "center",
+    gap: 10,
+    marginTop: -12,
+  },
+  remoteVideoPlaceholder: {
+    width: 230,
+    height: 140,
+    borderRadius: 12,
+    backgroundColor: "rgba(0,0,0,0.35)",
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 10,
+  },
+  remoteVideoPlaceholderText: { color: "rgba(255,255,255,0.8)", fontSize: 12 },
   center: { alignItems: "center", marginBottom: 30 },
   controls: {
     flexDirection: "row",

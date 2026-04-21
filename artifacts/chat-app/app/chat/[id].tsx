@@ -9,6 +9,7 @@ import React, {
 } from "react";
 import {
   ActivityIndicator,
+  Alert,
   FlatList,
   KeyboardAvoidingView,
   Modal,
@@ -62,12 +63,17 @@ export default function ChatScreen() {
   const [activeConversationKey, setActiveConversationKey] = useState<"chat_id" | "conversation_id">("chat_id");
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
+  const [recordingVoice, setRecordingVoice] = useState(false);
   const [isTyping, setIsTyping] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [replyTo, setReplyTo] = useState<Message | null>(null);
   const [actionMsg, setActionMsg] = useState<Message | null>(null);
   const [showActions, setShowActions] = useState(false);
   const typingTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const mediaStreamRef = useRef<MediaStream | null>(null);
+  const audioChunksRef = useRef<BlobPart[]>([]);
+  const recordingStartedAtRef = useRef<number | null>(null);
   const inputRef = useRef<TextInput>(null);
   const bottomPad = Platform.OS === "web" ? 34 : insets.bottom;
   const topPad = Platform.OS === "web" ? 0 : insets.top;
@@ -108,7 +114,7 @@ export default function ChatScreen() {
     })) as unknown as Message[];
   }, []);
 
-  const insertMessageRecord = useCallback(async (payload: { content: string; type?: string; replyToId?: string | null }) => {
+  const insertMessageRecord = useCallback(async (payload: { content: string; type?: string; replyToId?: string | null; duration?: number | null }) => {
     if (!activeChatId || !user) {
       return;
     }
@@ -124,6 +130,7 @@ export default function ChatScreen() {
       type: payload.type ?? "text",
       status: "sent",
       reply_to_id: payload.replyToId ?? null,
+      duration: payload.duration ?? null,
     };
 
     const { error } = await supabase.from("messages").insert(richPayload);
@@ -334,14 +341,128 @@ export default function ChatScreen() {
     const replyId = replyTo?.id ?? null;
     const replyMessage = replyTo;
     setReplyTo(null);
-    if (isDemoMode) {
-      await sendDemoText(currentChatId, content, replyMessage);
-    } else if (user) {
-      await insertMessageRecord({ content, type: "text", replyToId: replyId });
+    try {
+      if (isDemoMode) {
+        await sendDemoText(currentChatId, content, replyMessage);
+      } else if (user) {
+        await insertMessageRecord({ content, type: "text", replyToId: replyId });
+      }
+    } catch (error) {
+      console.error("[ChatScreen] failed to send text message", error);
+      Alert.alert("Send failed", "Unable to send this message right now.");
+      setText(content);
+    } finally {
+      setSending(false);
+      inputRef.current?.focus();
     }
-    setSending(false);
-    inputRef.current?.focus();
   };
+
+  const handleVoiceToggle = useCallback(async () => {
+    if (!currentChatId || sending) {
+      return;
+    }
+
+    if (isDemoMode) {
+      try {
+        await sendDemoVoice(currentChatId);
+      } catch (error) {
+        console.error("[ChatScreen] failed sending demo voice message", error);
+      }
+      return;
+    }
+
+    if (!user) {
+      Alert.alert("Unable to record", "You are not signed in.");
+      return;
+    }
+
+    if (Platform.OS !== "web") {
+      Alert.alert("Audio messages", "Voice recording is available on web in this build.");
+      return;
+    }
+
+    if (!recordingVoice) {
+      try {
+        console.log("[ChatScreen] start voice recording", { currentChatId });
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        mediaStreamRef.current = stream;
+        audioChunksRef.current = [];
+        const recorder = new MediaRecorder(stream, { mimeType: "audio/webm" });
+        mediaRecorderRef.current = recorder;
+        recordingStartedAtRef.current = Date.now();
+
+        recorder.ondataavailable = (event) => {
+          if (event.data && event.data.size > 0) {
+            audioChunksRef.current.push(event.data);
+          }
+        };
+
+        recorder.onerror = (event) => {
+          console.error("[ChatScreen] voice recorder error", event);
+        };
+
+        recorder.onstop = async () => {
+          try {
+            const chunks = audioChunksRef.current;
+            audioChunksRef.current = [];
+            const recordedAt = recordingStartedAtRef.current ?? Date.now();
+            const duration = Math.max(1, Math.round((Date.now() - recordedAt) / 1000));
+            recordingStartedAtRef.current = null;
+
+            if (chunks.length === 0) {
+              console.warn("[ChatScreen] no audio chunks captured");
+              return;
+            }
+
+            const blob = new Blob(chunks, { type: "audio/webm" });
+            const path = `${user.id}/${Date.now()}.webm`;
+            const { error: uploadError } = await supabase.storage
+              .from("chat-media")
+              .upload(path, blob, { contentType: "audio/webm", upsert: false });
+
+            if (uploadError) {
+              console.error("[ChatScreen] failed uploading voice message", uploadError);
+              Alert.alert("Upload failed", "Unable to upload voice message.");
+              return;
+            }
+
+            const { data: voiceUrlData } = supabase.storage.from("chat-media").getPublicUrl(path);
+            await insertMessageRecord({ content: voiceUrlData.publicUrl, type: "voice", duration });
+          } catch (error) {
+            console.error("[ChatScreen] failed finalizing voice recording", error);
+            Alert.alert("Recording failed", "Unable to send voice message.");
+          } finally {
+            mediaStreamRef.current?.getTracks().forEach((track) => track.stop());
+            mediaStreamRef.current = null;
+            mediaRecorderRef.current = null;
+            setRecordingVoice(false);
+          }
+        };
+
+        recorder.start();
+        setRecordingVoice(true);
+      } catch (error) {
+        console.error("[ChatScreen] failed to start recording", error);
+        Alert.alert("Microphone error", "Please allow microphone access and try again.");
+        setRecordingVoice(false);
+        mediaStreamRef.current?.getTracks().forEach((track) => track.stop());
+        mediaStreamRef.current = null;
+        mediaRecorderRef.current = null;
+      }
+      return;
+    }
+
+    try {
+      console.log("[ChatScreen] stop voice recording", { currentChatId });
+      mediaRecorderRef.current?.stop();
+    } catch (error) {
+      console.error("[ChatScreen] failed stopping recorder", error);
+      setRecordingVoice(false);
+      mediaStreamRef.current?.getTracks().forEach((track) => track.stop());
+      mediaStreamRef.current = null;
+      mediaRecorderRef.current = null;
+    }
+  }, [currentChatId, insertMessageRecord, isDemoMode, recordingVoice, sendDemoVoice, sending, user]);
 
   const handlePickImage = async () => {
     if (!currentChatId) return;
@@ -539,7 +660,7 @@ export default function ChatScreen() {
               >
                 {sending ? <ActivityIndicator color="white" size="small" />
                   : canSend ? <Ionicons name="send" size={20} color="white" />
-                  : <Pressable onPress={() => currentChatId && sendDemoVoice(currentChatId)}><Ionicons name="mic-outline" size={22} color={colors.mutedForeground} /></Pressable>
+                  : <Pressable onPress={handleVoiceToggle}><Ionicons name={recordingVoice ? "stop-circle" : "mic-outline"} size={22} color={recordingVoice ? colors.destructive : colors.mutedForeground} /></Pressable>
                 }
               </Pressable>
             </View>

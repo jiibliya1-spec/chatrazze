@@ -12,6 +12,16 @@ export type ConversationResolution = {
   backend: ConversationBackend;
 };
 
+type ConversationLookupResult = {
+  backend: ConversationBackend;
+  conversationId: string;
+};
+
+type ConversationParticipantRow = {
+  chat_id?: string;
+  conversation_id?: string;
+};
+
 let cachedBackend: ConversationBackend | null = null;
 
 const DEFAULT_TIMEOUT_MS = 3000;
@@ -37,7 +47,7 @@ export async function withTimeout<T>(operation: PromiseLike<T>, label: string, t
   }
 }
 
-export async function resolveConversationBackend() {
+export async function resolveConversationBackend(): Promise<ConversationBackend> {
   if (cachedBackend) {
     return cachedBackend;
   }
@@ -79,7 +89,7 @@ export async function resolveConversationBackend() {
   );
 }
 
-export async function getOrCreateDirectConversation(currentUserId: string, otherUserId: string) {
+export async function getOrCreateDirectConversation(currentUserId: string, otherUserId: string): Promise<ConversationLookupResult> {
   const backend = await resolveConversationBackend();
 
   const { data: currentParticipants, error: currentParticipantsError } = await withTimeout(
@@ -98,21 +108,24 @@ export async function getOrCreateDirectConversation(currentUserId: string, other
     throw otherParticipantsError;
   }
 
-  const currentParticipantRows = (currentParticipants ?? []) as Record<string, string>[];
-  const otherParticipantRows = (otherParticipants ?? []) as Record<string, string>[];
+  const currentParticipantRows = (currentParticipants ?? []) as ConversationParticipantRow[];
+  const otherParticipantRows = (otherParticipants ?? []) as ConversationParticipantRow[];
 
   const currentConversationIds = new Set(
-    currentParticipantRows.map((participant) => participant[backend.conversationKey])
+    currentParticipantRows
+      .map((participant) => participant[backend.conversationKey])
+      .filter((conversationId): conversationId is string => typeof conversationId === "string" && conversationId.length > 0)
   );
 
   const sharedConversation = otherParticipantRows.find((participant) =>
-    currentConversationIds.has(participant[backend.conversationKey])
+    typeof participant[backend.conversationKey] === "string" && currentConversationIds.has(participant[backend.conversationKey] as string)
   );
 
-  if (sharedConversation?.[backend.conversationKey]) {
+  const sharedConversationId = sharedConversation?.[backend.conversationKey];
+  if (typeof sharedConversationId === "string" && sharedConversationId.length > 0) {
     return {
       backend,
-      conversationId: sharedConversation[backend.conversationKey],
+      conversationId: sharedConversationId,
     };
   }
 
@@ -161,12 +174,13 @@ export async function resolveConversationFromRoute(routeId: string, currentUserI
     throw existingConversationError;
   }
 
-  const existingConversationRecord = existingConversation as Record<string, string> | null;
+  const existingConversationRecord = existingConversation as ConversationParticipantRow | null;
+  const existingConversationId = existingConversationRecord?.[backend.conversationKey];
 
-  if (existingConversationRecord?.[backend.conversationKey]) {
+  if (typeof existingConversationId === "string" && existingConversationId.length > 0) {
     return {
       backend,
-      conversationId: existingConversationRecord[backend.conversationKey],
+      conversationId: existingConversationId,
       otherUserId: routeUserId ?? "",
     };
   }

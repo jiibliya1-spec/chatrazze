@@ -1,5 +1,5 @@
 import { Ionicons } from "@expo/vector-icons";
-import React from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { Image, Pressable, StyleSheet, Text, View } from "react-native";
 import { useColors } from "@/hooks/useColors";
 import { Message, MessageStatus } from "@/types";
@@ -25,6 +25,26 @@ function formatDuration(secs: number): string {
 
 export function MessageBubble({ message, isSent, onReact, onReply }: MessageBubbleProps) {
   const colors = useColors();
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const [audioPlaying, setAudioPlaying] = useState(false);
+
+  useEffect(() => {
+    return () => {
+      if (audioRef.current) {
+        audioRef.current.pause();
+        audioRef.current.src = "";
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current.src = "";
+      audioRef.current = null;
+      setAudioPlaying(false);
+    }
+  }, [message.id]);
 
   if (message.is_deleted) {
     return (
@@ -56,6 +76,30 @@ export function MessageBubble({ message, isSent, onReact, onReply }: MessageBubb
   }
   const reactionEntries = Object.entries(reactionGroups);
 
+  const toggleAudioPlayback = async () => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    if (audioRef.current && audioPlaying) {
+      audioRef.current.pause();
+      setAudioPlaying(false);
+      return;
+    }
+
+    try {
+      if (!audioRef.current) {
+        audioRef.current = new Audio(message.content);
+        audioRef.current.onended = () => setAudioPlaying(false);
+      }
+      await audioRef.current.play();
+      setAudioPlaying(true);
+    } catch (error) {
+      console.error("[MessageBubble] failed to play audio", error);
+      setAudioPlaying(false);
+    }
+  };
+
   const renderContent = () => {
     if (message.type === "image") {
       return (
@@ -69,12 +113,12 @@ export function MessageBubble({ message, isSent, onReact, onReply }: MessageBubb
       );
     }
 
-    if (message.type === "voice") {
+    if (message.type === "voice" || message.type === "audio") {
       return (
         <View style={[styles.voiceRow]}>
-          <View style={[styles.voicePlayBtn, { backgroundColor: isSent ? colors.primaryDark : colors.primary }]}>
-            <Ionicons name="play" size={18} color="white" />
-          </View>
+          <Pressable onPress={toggleAudioPlayback} style={[styles.voicePlayBtn, { backgroundColor: isSent ? colors.primaryDark : colors.primary }]}> 
+            <Ionicons name={audioPlaying ? "pause" : "play"} size={18} color="white" />
+          </Pressable>
           <View style={styles.voiceWave}>
             {[3, 6, 10, 7, 12, 5, 8, 11, 4, 9, 6, 3, 8, 10, 5].map((h, i) => (
               <View
