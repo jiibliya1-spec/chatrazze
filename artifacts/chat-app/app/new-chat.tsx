@@ -17,6 +17,7 @@ import { Avatar } from "@/components/Avatar";
 import { useAuth } from "@/contexts/AuthContext";
 import { useI18n } from "@/contexts/I18nContext";
 import { useColors } from "@/hooks/useColors";
+import { getOrCreateDirectConversation } from "@/lib/conversations";
 import { supabase } from "@/lib/supabase";
 import { User } from "@/types";
 
@@ -29,22 +30,6 @@ export default function NewChatScreen() {
   const [users, setUsers] = useState<User[]>([]);
   const [loading, setLoading] = useState(false);
   const [creating, setCreating] = useState<string | null>(null);
-
-  const withTimeout = async <T,>(operation: PromiseLike<T>, label: string, timeoutMs = 3000): Promise<T> => {
-    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
-    try {
-      return await Promise.race([
-        Promise.resolve(operation),
-        new Promise<T>((_, reject) => {
-          timeoutHandle = setTimeout(() => reject(new Error(`${label} timed out after ${timeoutMs}ms`)), timeoutMs);
-        }),
-      ]);
-    } finally {
-      if (timeoutHandle) {
-        clearTimeout(timeoutHandle);
-      }
-    }
-  };
 
   const topPad = Platform.OS === "web" ? 0 : insets.top;
 
@@ -85,83 +70,27 @@ export default function NewChatScreen() {
       return;
     }
 
-    console.log("[NewChat] user clicked", { selectedUserId: otherUserId, currentUserId: user.id });
+    console.log("User clicked:", otherUserId);
+    console.log("CLICK USER", otherUserId);
     setCreating(otherUserId);
+    setLoading(true);
 
     try {
-      const { data: existing, error: existingError } = await withTimeout(
-        supabase
-          .from("chat_participants")
-          .select("chat_id")
-          .eq("user_id", user.id),
-        "Load current user chats"
-      );
-
-      if (existingError) {
-        console.error("[NewChat] failed to load current user chats", existingError);
-        throw existingError;
-      }
-
-      const { data: otherParticipants, error: otherError } = await withTimeout(
-        supabase
-          .from("chat_participants")
-          .select("chat_id")
-          .eq("user_id", otherUserId),
-        "Load selected user chats"
-      );
-
-      if (otherError) {
-        console.error("[NewChat] failed to load selected user chats", otherError);
-        throw otherError;
-      }
-
-      const myChats = new Set((existing ?? []).map((participant: { chat_id: string }) => participant.chat_id));
-      const sharedChat = (otherParticipants ?? []).find((participant: { chat_id: string }) => myChats.has(participant.chat_id));
-
-      let conversationId = sharedChat?.chat_id ?? null;
-
-      if (!conversationId) {
-        console.log("[NewChat] no shared chat found, creating new chat", { selectedUserId: otherUserId });
-        const { data: newChat, error: createError } = await withTimeout(
-          supabase.from("chats").insert({}).select().single(),
-          "Create chat"
-        );
-        if (createError) {
-          console.error("[NewChat] failed to create chat", createError);
-          throw createError;
-        }
-
-        if (!newChat?.id) {
-          throw new Error("Create chat returned no chat id");
-        }
-
-        const { error: insertParticipantsError } = await withTimeout(
-          supabase.from("chat_participants").insert([
-            { chat_id: newChat.id, user_id: user.id },
-            { chat_id: newChat.id, user_id: otherUserId },
-          ]),
-          "Insert chat participants"
-        );
-
-        if (insertParticipantsError) {
-          console.error("[NewChat] failed to insert chat participants", insertParticipantsError);
-          throw insertParticipantsError;
-        }
-
-        conversationId = newChat.id;
-      }
+      const { conversationId } = await getOrCreateDirectConversation(user.id, otherUserId);
 
       if (!conversationId) {
         throw new Error("Could not resolve a conversation id");
       }
 
-      console.log("[NewChat] conversation ready, navigating", { selectedUserId: otherUserId, conversationId });
+      console.log("Conversation found or created:", conversationId);
+      console.log("NAVIGATING TO", conversationId);
       router.push(`/chat/${conversationId}`);
     } catch (error) {
       console.error("[NewChat] openChat failed", error);
       Alert.alert("Unable to open chat", "Please try again.");
     } finally {
       console.log("[NewChat] request finished", { selectedUserId: otherUserId });
+      setLoading(false);
       setCreating(null);
     }
   };
