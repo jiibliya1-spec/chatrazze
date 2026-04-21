@@ -42,12 +42,12 @@ export async function resolveConversationBackend() {
     return cachedBackend;
   }
 
-  const { error } = await withTimeout(
+  const { error: participantsProbeError } = await withTimeout(
     supabase.from("participants").select("conversation_id").limit(1),
-    "Resolve conversation backend"
+    "Resolve conversations backend"
   );
 
-  if (!error) {
+  if (!participantsProbeError) {
     cachedBackend = {
       conversationTable: "conversations",
       participantTable: "participants",
@@ -56,16 +56,27 @@ export async function resolveConversationBackend() {
     return cachedBackend;
   }
 
-  if (!isMissingRelationError(error)) {
-    throw error;
+  const { error: chatsProbeError } = await withTimeout(
+    supabase.from("chat_participants").select("chat_id").limit(1),
+    "Resolve chats backend"
+  );
+
+  if (!chatsProbeError) {
+    cachedBackend = {
+      conversationTable: "chats",
+      participantTable: "chat_participants",
+      conversationKey: "chat_id",
+    };
+    return cachedBackend;
   }
 
-  cachedBackend = {
-    conversationTable: "chats",
-    participantTable: "chat_participants",
-    conversationKey: "chat_id",
-  };
-  return cachedBackend;
+  if (isMissingRelationError(participantsProbeError) || isMissingRelationError(chatsProbeError)) {
+    throw new Error("No supported conversation schema is available in Supabase.");
+  }
+
+  throw new Error(
+    `Unable to access conversation tables. participants error: ${String((participantsProbeError as { message?: string } | null)?.message ?? participantsProbeError)}; chat_participants error: ${String((chatsProbeError as { message?: string } | null)?.message ?? chatsProbeError)}`
+  );
 }
 
 export async function getOrCreateDirectConversation(currentUserId: string, otherUserId: string) {
