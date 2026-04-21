@@ -57,25 +57,67 @@ export default function NewChatScreen() {
   }, [search, user?.id]);
 
   const openChat = async (otherUserId: string) => {
-    if (!user) return;
-    setCreating(otherUserId);
-    const { data: existing } = await supabase.from("chat_participants").select("chat_id").eq("user_id", user.id);
-    const { data: otherParticipants } = await supabase.from("chat_participants").select("chat_id").eq("user_id", otherUserId);
-    const myChats = new Set((existing ?? []).map((p: any) => p.chat_id));
-    const sharedChat = (otherParticipants ?? []).find((p: any) => myChats.has(p.chat_id));
-    if (sharedChat) {
-      router.replace(`/chat/${sharedChat.chat_id}`);
+    if (!user) {
+      console.warn("[NewChat] openChat called without authenticated user");
       return;
     }
-    const { data: newChat } = await supabase.from("chats").insert({}).select().single();
-    if (newChat) {
-      await supabase.from("chat_participants").insert([
-        { chat_id: newChat.id, user_id: user.id },
-        { chat_id: newChat.id, user_id: otherUserId },
-      ]);
-      router.replace(`/chat/${newChat.id}`);
+
+    console.log("[NewChat] user clicked", { selectedUserId: otherUserId, currentUserId: user.id });
+    setCreating(otherUserId);
+
+    try {
+      const { data: existing, error: existingError } = await supabase
+        .from("chat_participants")
+        .select("chat_id")
+        .eq("user_id", user.id);
+
+      if (existingError) {
+        console.error("[NewChat] failed to load current user chats", existingError);
+      }
+
+      const { data: otherParticipants, error: otherError } = await supabase
+        .from("chat_participants")
+        .select("chat_id")
+        .eq("user_id", otherUserId);
+
+      if (otherError) {
+        console.error("[NewChat] failed to load selected user chats", otherError);
+      }
+
+      const myChats = new Set((existing ?? []).map((participant: { chat_id: string }) => participant.chat_id));
+      const sharedChat = (otherParticipants ?? []).find((participant: { chat_id: string }) => myChats.has(participant.chat_id));
+
+      if (sharedChat) {
+        console.log("[NewChat] existing chat found, navigating", { selectedUserId: otherUserId, chatId: sharedChat.chat_id });
+        router.push({ pathname: "/chat/[id]", params: { id: otherUserId, userId: otherUserId, chatId: sharedChat.chat_id } });
+        return;
+      }
+
+      const { data: newChat, error: createError } = await supabase.from("chats").insert({}).select().single();
+      if (createError) {
+        console.error("[NewChat] failed to create chat", createError);
+        return;
+      }
+
+      if (newChat) {
+        const { error: insertParticipantsError } = await supabase.from("chat_participants").insert([
+          { chat_id: newChat.id, user_id: user.id },
+          { chat_id: newChat.id, user_id: otherUserId },
+        ]);
+
+        if (insertParticipantsError) {
+          console.error("[NewChat] failed to insert chat participants", insertParticipantsError);
+          return;
+        }
+
+        console.log("[NewChat] new chat created, navigating", { selectedUserId: otherUserId, chatId: newChat.id });
+        router.push({ pathname: "/chat/[id]", params: { id: otherUserId, userId: otherUserId, chatId: newChat.id } });
+      }
+    } catch (error) {
+      console.error("[NewChat] openChat failed", error);
+    } finally {
+      setCreating(null);
     }
-    setCreating(null);
   };
 
   return (
@@ -120,7 +162,10 @@ export default function NewChatScreen() {
           renderItem={({ item }) => (
             <Pressable
               style={({ pressed }) => [styles.userRow, { backgroundColor: pressed ? colors.muted : colors.background, borderBottomColor: colors.separator }]}
-              onPress={() => openChat(item.id)}
+              onPress={() => {
+                console.log("[NewChat] press row", { selectedUserId: item.id });
+                openChat(item.id);
+              }}
             >
               <Avatar uri={item.avatar_url} name={item.display_name || item.phone} size={52} showOnline isOnline={item.is_online} />
               <View style={styles.userInfo}>

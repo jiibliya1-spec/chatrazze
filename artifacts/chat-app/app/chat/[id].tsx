@@ -34,7 +34,7 @@ import { Message, MessageReaction, User } from "@/types";
 const REACTION_EMOJIS = ["❤️", "😂", "👍", "😮", "😢", "🙏"];
 
 export default function ChatScreen() {
-  const { id } = useLocalSearchParams<{ id: string }>();
+  const { id: routeIdParam, chatId: routeChatIdParam, userId: routeUserIdParam } = useLocalSearchParams<{ id: string; chatId?: string; userId?: string }>();
   const { user } = useAuth();
   const {
     isDemoMode,
@@ -51,9 +51,13 @@ export default function ChatScreen() {
   const colors = useColors();
   const insets = useSafeAreaInsets();
   const { t } = useI18n();
+  const routeId = typeof routeIdParam === "string" ? routeIdParam : undefined;
+  const routeChatId = typeof routeChatIdParam === "string" ? routeChatIdParam : undefined;
+  const routeUserId = typeof routeUserIdParam === "string" ? routeUserIdParam : undefined;
   const [messages, setMessages] = useState<Message[]>([]);
   const [otherUser, setOtherUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
+  const [activeChatId, setActiveChatId] = useState<string | null>(null);
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
   const [isTyping, setIsTyping] = useState(false);
@@ -67,13 +71,21 @@ export default function ChatScreen() {
   const topPad = Platform.OS === "web" ? 0 : insets.top;
 
   const fetchData = useCallback(async () => {
-    if (isDemoMode && id) {
-      setMessages(getDemoMessages(id));
-      const chatMeta = getDemoMessages(id)[0];
+    if (isDemoMode) {
+      const demoChatId = routeChatId ?? routeId;
+      if (!demoChatId) {
+        console.warn("[ChatScreen] missing demo chat id in route params", { routeId, routeChatId, routeUserId });
+        setLoading(false);
+        return;
+      }
+
+      setActiveChatId(demoChatId);
+      setMessages(getDemoMessages(demoChatId));
+      const chatMeta = getDemoMessages(demoChatId)[0];
       const otherUserId = chatMeta?.sender_id === demoProfile.id ? undefined : chatMeta?.sender_id;
       const guessedOther = otherUserId ? getDemoUser(otherUserId) : undefined;
       if (!guessedOther) {
-        const firstForeign = getDemoMessages(id).find((message) => message.sender_id !== demoProfile.id);
+        const firstForeign = getDemoMessages(demoChatId).find((message) => message.sender_id !== demoProfile.id);
         setOtherUser(firstForeign ? getDemoUser(firstForeign.sender_id) ?? null : null);
       } else {
         setOtherUser(guessedOther ?? null);
@@ -82,27 +94,158 @@ export default function ChatScreen() {
       return;
     }
 
-    if (!user || !id) return;
-    const { data: participants } = await supabase
-      .from("chat_participants")
-      .select("*, user:users(*)")
-      .eq("chat_id", id);
-    const other = participants?.find((p: any) => p.user_id !== user.id);
-    if (other?.user) setOtherUser(other.user as User);
-    const { data: msgsData } = await supabase
-      .from("messages")
-      .select("*, reactions:message_reactions(*)")
-      .eq("chat_id", id)
-      .order("created_at", { ascending: false });
-    if (msgsData) setMessages(msgsData as Message[]);
-    await supabase
-      .from("messages")
-      .update({ status: "read" })
-      .eq("chat_id", id)
-      .neq("sender_id", user.id)
-      .neq("status", "read");
-    setLoading(false);
-  }, [demoProfile.id, getDemoMessages, getDemoUser, id, isDemoMode, user]);
+    if (!user || !routeId) {
+      console.warn("[ChatScreen] missing required non-demo params", { routeId, currentUserId: user?.id });
+      setLoading(false);
+      return;
+    }
+
+    setLoading(true);
+
+    try {
+      console.log("[ChatScreen] resolve chat from route", {
+        routeId,
+        routeChatId,
+        routeUserId,
+        currentUserId: user.id,
+      });
+
+      let resolvedChatId = routeChatId ?? null;
+      let resolvedOtherUserId = routeUserId ?? null;
+
+      if (!resolvedChatId) {
+        const { data: joinedChat, error: joinedChatError } = await supabase
+          .from("chat_participants")
+          .select("chat_id")
+          .eq("chat_id", routeId)
+          .eq("user_id", user.id)
+          .maybeSingle();
+
+        if (joinedChatError) {
+          console.error("[ChatScreen] failed checking whether route id is a chat id", joinedChatError);
+        }
+
+        if (joinedChat?.chat_id) {
+          resolvedChatId = joinedChat.chat_id;
+        } else {
+          resolvedOtherUserId = resolvedOtherUserId ?? routeId;
+        }
+      }
+
+      if (!resolvedChatId && resolvedOtherUserId) {
+        const { data: myParticipants, error: myParticipantsError } = await supabase
+          .from("chat_participants")
+          .select("chat_id")
+          .eq("user_id", user.id);
+        if (myParticipantsError) {
+          console.error("[ChatScreen] failed loading current user participants", myParticipantsError);
+        }
+
+        const { data: otherParticipants, error: otherParticipantsError } = await supabase
+          .from("chat_participants")
+          .select("chat_id")
+          .eq("user_id", resolvedOtherUserId);
+        if (otherParticipantsError) {
+          console.error("[ChatScreen] failed loading target user participants", otherParticipantsError);
+        }
+
+        const myChats = new Set((myParticipants ?? []).map((participant: { chat_id: string }) => participant.chat_id));
+        const sharedChat = (otherParticipants ?? []).find((participant: { chat_id: string }) => myChats.has(participant.chat_id));
+
+        if (sharedChat) {
+          resolvedChatId = sharedChat.chat_id;
+          console.log("[ChatScreen] found existing shared chat", { resolvedChatId, resolvedOtherUserId });
+        } else {
+          const { data: newChat, error: createChatError } = await supabase.from("chats").insert({}).select().single();
+          if (createChatError) {
+            console.error("[ChatScreen] failed creating chat", createChatError);
+          }
+
+          if (newChat) {
+            const { error: insertParticipantsError } = await supabase.from("chat_participants").insert([
+              { chat_id: newChat.id, user_id: user.id },
+              { chat_id: newChat.id, user_id: resolvedOtherUserId },
+            ]);
+
+            if (insertParticipantsError) {
+              console.error("[ChatScreen] failed inserting participants for new chat", insertParticipantsError);
+            } else {
+              resolvedChatId = newChat.id;
+              console.log("[ChatScreen] created chat from route user", { resolvedChatId, resolvedOtherUserId });
+            }
+          }
+        }
+      }
+
+      if (!resolvedChatId) {
+        console.error("[ChatScreen] unable to resolve a chat id from route params", {
+          routeId,
+          routeChatId,
+          routeUserId,
+        });
+        setMessages([]);
+        setOtherUser(null);
+        return;
+      }
+
+      setActiveChatId(resolvedChatId);
+
+      const { data: participants, error: participantsError } = await supabase
+        .from("chat_participants")
+        .select("*, user:users(*)")
+        .eq("chat_id", resolvedChatId);
+      if (participantsError) {
+        console.error("[ChatScreen] failed loading chat participants", participantsError);
+      }
+
+      const other = participants?.find((participant: any) => participant.user_id !== user.id);
+      if (other?.user) {
+        setOtherUser(other.user as User);
+      } else {
+        setOtherUser(null);
+      }
+
+      const { data: msgsData, error: messagesError } = await supabase
+        .from("messages")
+        .select("*, reactions:message_reactions(*)")
+        .eq("chat_id", resolvedChatId)
+        .order("created_at", { ascending: false });
+
+      if (messagesError) {
+        console.error("[ChatScreen] failed loading messages", messagesError);
+      }
+
+      if (msgsData) {
+        setMessages(msgsData as Message[]);
+      }
+
+      await supabase
+        .from("messages")
+        .update({ status: "read" })
+        .eq("chat_id", resolvedChatId)
+        .neq("sender_id", user.id)
+        .neq("status", "read");
+
+      console.log("[ChatScreen] chat ready", {
+        resolvedChatId,
+        otherUserId: other?.user_id ?? resolvedOtherUserId,
+        messageCount: msgsData?.length ?? 0,
+      });
+    } catch (error) {
+      console.error("[ChatScreen] fetchData failed", error);
+    } finally {
+      setLoading(false);
+    }
+  }, [
+    demoProfile.id,
+    getDemoMessages,
+    getDemoUser,
+    routeChatId,
+    routeId,
+    routeUserId,
+    isDemoMode,
+    user,
+  ]);
 
   useEffect(() => {
     fetchData();
@@ -111,9 +254,13 @@ export default function ChatScreen() {
       return;
     }
 
+    if (!activeChatId) {
+      return;
+    }
+
     const msgChannel = supabase
-      .channel(`chat-msgs-${id}`)
-      .on("postgres_changes", { event: "INSERT", schema: "public", table: "messages", filter: `chat_id=eq.${id}` },
+      .channel(`chat-msgs-${activeChatId}`)
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: "messages", filter: `chat_id=eq.${activeChatId}` },
         async (payload) => {
           const newMsg = { ...(payload.new as Message), reactions: [] };
           setMessages((prev) => [newMsg, ...prev]);
@@ -122,7 +269,7 @@ export default function ChatScreen() {
           }
         }
       )
-      .on("postgres_changes", { event: "UPDATE", schema: "public", table: "messages", filter: `chat_id=eq.${id}` },
+      .on("postgres_changes", { event: "UPDATE", schema: "public", table: "messages", filter: `chat_id=eq.${activeChatId}` },
         async (payload) => {
           const { data: updated } = await supabase
             .from("messages")
@@ -135,7 +282,7 @@ export default function ChatScreen() {
       .on("postgres_changes", { event: "*", schema: "public", table: "message_reactions" }, () => fetchData())
       .subscribe();
     const typingChannel = supabase
-      .channel(`typing-${id}`)
+      .channel(`typing-${activeChatId}`)
       .on("broadcast", { event: "typing" }, (payload) => {
         if (payload.payload?.user_id !== user?.id) {
           setIsTyping(true);
@@ -148,28 +295,33 @@ export default function ChatScreen() {
       supabase.removeChannel(msgChannel);
       supabase.removeChannel(typingChannel);
     };
-  }, [fetchData, id, isDemoMode, user?.id]);
+  }, [activeChatId, fetchData, isDemoMode, user?.id]);
+
+  const currentChatId = activeChatId;
 
   const broadcastTyping = useCallback(async () => {
     if (isDemoMode) {
       return;
     }
-    await supabase.channel(`typing-${id}`).send({ type: "broadcast", event: "typing", payload: { user_id: user?.id } });
-  }, [id, isDemoMode, user?.id]);
+    if (!currentChatId) {
+      return;
+    }
+    await supabase.channel(`typing-${currentChatId}`).send({ type: "broadcast", event: "typing", payload: { user_id: user?.id } });
+  }, [currentChatId, isDemoMode, user?.id]);
 
   const handleSend = async () => {
     const content = text.trim();
-    if (!content || sending || !id) return;
+    if (!content || sending || !currentChatId) return;
     setText("");
     setSending(true);
     const replyId = replyTo?.id ?? null;
     const replyMessage = replyTo;
     setReplyTo(null);
     if (isDemoMode) {
-      await sendDemoText(id, content, replyMessage);
+      await sendDemoText(currentChatId, content, replyMessage);
     } else if (user) {
       await supabase.from("messages").insert({
-        chat_id: id, sender_id: user.id, content, type: "text", status: "sent", reply_to_id: replyId,
+        chat_id: currentChatId, sender_id: user.id, content, type: "text", status: "sent", reply_to_id: replyId,
       });
     }
     setSending(false);
@@ -177,7 +329,7 @@ export default function ChatScreen() {
   };
 
   const handlePickImage = async () => {
-    if (!id) return;
+    if (!currentChatId) return;
     if (Platform.OS === "web") {
       const input = document.createElement("input");
       input.type = "file";
@@ -189,7 +341,7 @@ export default function ChatScreen() {
         try {
           const previewUrl = URL.createObjectURL(file);
           if (isDemoMode) {
-            await sendDemoImage(id, previewUrl, replyTo);
+            await sendDemoImage(currentChatId, previewUrl, replyTo);
             setReplyTo(null);
             return;
           }
@@ -198,7 +350,7 @@ export default function ChatScreen() {
           const path = `${user.id}/${Date.now()}.${ext}`;
           await supabase.storage.from("chat-media").upload(path, file, { contentType: file.type });
           const { data: urlData } = supabase.storage.from("chat-media").getPublicUrl(path);
-          await supabase.from("messages").insert({ chat_id: id, sender_id: user.id, content: urlData.publicUrl, type: "image", status: "sent" });
+          await supabase.from("messages").insert({ chat_id: currentChatId, sender_id: user.id, content: urlData.publicUrl, type: "image", status: "sent" });
         } catch (err) { console.warn("upload error", err); }
         finally { setUploading(false); }
       };
@@ -214,7 +366,7 @@ export default function ChatScreen() {
     try {
       const asset = result.assets[0];
       if (isDemoMode) {
-        await sendDemoImage(id, asset.uri, replyTo);
+        await sendDemoImage(currentChatId, asset.uri, replyTo);
         setReplyTo(null);
         return;
       }
@@ -225,7 +377,7 @@ export default function ChatScreen() {
       const blob = await response.blob();
       await supabase.storage.from("chat-media").upload(path, blob, { contentType: `image/${ext}` });
       const { data: urlData } = supabase.storage.from("chat-media").getPublicUrl(path);
-      await supabase.from("messages").insert({ chat_id: id, sender_id: user.id, content: urlData.publicUrl, type: "image", status: "sent" });
+      await supabase.from("messages").insert({ chat_id: currentChatId, sender_id: user.id, content: urlData.publicUrl, type: "image", status: "sent" });
     } catch (err) { console.warn("upload error", err); }
     finally { setUploading(false); }
   };
@@ -234,8 +386,8 @@ export default function ChatScreen() {
     if (!user && !isDemoMode) return;
     setShowActions(false);
     setActionMsg(null);
-    if (isDemoMode && id) {
-      await reactToDemoMessage(id, messageId, emoji);
+    if (isDemoMode && currentChatId) {
+      await reactToDemoMessage(currentChatId, messageId, emoji);
       return;
     }
     if (!user) return;
@@ -249,8 +401,8 @@ export default function ChatScreen() {
   };
 
   const handleDelete = async (messageId: string) => {
-    if (isDemoMode && id) {
-      await deleteDemoMessage(id, messageId);
+    if (isDemoMode && currentChatId) {
+      await deleteDemoMessage(currentChatId, messageId);
       setActionMsg(null);
       setShowActions(false);
       return;
@@ -293,14 +445,14 @@ export default function ChatScreen() {
           </Pressable>
           <View style={styles.headerInfo}>
             <Text style={styles.headerName} numberOfLines={1}>{otherUser?.display_name || otherUser?.phone || t("chats")}</Text>
-            <Text style={styles.headerStatus}>{(isDemoMode ? typingByChat[id ?? ""] : isTyping) ? t("typing") : isOnline ? t("online") : lastSeenStr}</Text>
+            <Text style={styles.headerStatus}>{(isDemoMode ? typingByChat[currentChatId ?? ""] : isTyping) ? t("typing") : isOnline ? t("online") : lastSeenStr}</Text>
           </View>
         </View>
         <View style={styles.headerActions}>
-          <Pressable style={styles.headerBtn} onPress={() => router.push(`/call/${id}?type=video&calleeId=${otherUser?.id ?? ""}`)}>
+          <Pressable style={styles.headerBtn} onPress={() => currentChatId && router.push(`/call/${currentChatId}?type=video&calleeId=${otherUser?.id ?? ""}`)}>
             <Ionicons name="videocam-outline" size={23} color="white" />
           </Pressable>
-          <Pressable style={styles.headerBtn} onPress={() => router.push(`/call/${id}?type=audio&calleeId=${otherUser?.id ?? ""}`)}>
+          <Pressable style={styles.headerBtn} onPress={() => currentChatId && router.push(`/call/${currentChatId}?type=audio&calleeId=${otherUser?.id ?? ""}`)}>
             <Ionicons name="call-outline" size={23} color="white" />
           </Pressable>
           <Pressable style={styles.headerBtn}>
@@ -372,7 +524,7 @@ export default function ChatScreen() {
               >
                 {sending ? <ActivityIndicator color="white" size="small" />
                   : canSend ? <Ionicons name="send" size={20} color="white" />
-                  : <Pressable onPress={() => id && sendDemoVoice(id)}><Ionicons name="mic-outline" size={22} color={colors.mutedForeground} /></Pressable>
+                  : <Pressable onPress={() => currentChatId && sendDemoVoice(currentChatId)}><Ionicons name="mic-outline" size={22} color={colors.mutedForeground} /></Pressable>
                 }
               </Pressable>
             </View>
