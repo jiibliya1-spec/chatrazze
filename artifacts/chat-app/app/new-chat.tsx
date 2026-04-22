@@ -43,13 +43,20 @@ export default function NewChatScreen() {
   };
 
   useEffect(() => {
+    // Guard: if user ID is not available, don't fetch
+    if (!user?.id) {
+      setUsers([]);
+      setLoading(false);
+      return;
+    }
+
     const fetchUsers = async () => {
       setLoading(true);
       try {
         let query = supabase
           .from("users")
           .select("*")
-          .neq("id", user?.id ?? "");
+          .neq("id", user.id);
 
         if (search.trim()) {
           query = query.or(
@@ -64,10 +71,12 @@ export default function NewChatScreen() {
         if (error) {
           console.error("[NewChat] failed loading users", error);
           setUsers([]);
-          return;
+        } else {
+          setUsers((data as User[]) ?? []);
         }
-
-        setUsers((data as User[]) ?? []);
+      } catch (err) {
+        console.error("[NewChat] fetchUsers error:", err);
+        setUsers([]);
       } finally {
         setLoading(false);
       }
@@ -123,75 +132,75 @@ export default function NewChatScreen() {
   };
 
   return (
-    <View style={[styles.container, { backgroundColor: colors.background }]}>
-      <View style={[styles.header, { backgroundColor: colors.headerBg, paddingTop: topPad + 8 }]}>
-        <Pressable onPress={goBackOrChats} style={styles.backBtn}>
-          <Ionicons name="arrow-back" size={24} color="white" />
-        </Pressable>
-        <Text style={styles.headerTitle}>{t("newChat")}</Text>
-      </View>
+    <View style={[styles.container, { backgroundColor: colors.background }]}> 
+      <View style={[styles.header, { backgroundColor: colors.headerBg, paddingTop: topPad + 8 }]}> 
+        <Pressable onPress={goBackOrChats} style={styles.backBtn}> 
+          <Ionicons name="arrow-back" size={24} color="white" /> 
+        </Pressable> 
+        <Text style={styles.headerTitle}>{t("newChat")}</Text> 
+      </View> 
 
-      <View style={[styles.searchWrap, { backgroundColor: colors.background }]}>
-        <View style={[styles.searchBar, { backgroundColor: colors.card, borderColor: colors.border }]}>
-          <Ionicons name="search" size={16} color={colors.mutedForeground} />
-          <TextInput
-            style={[styles.searchInput, { color: colors.foreground }]}
-            placeholder={t("searchByNameOrPhone")}
-            placeholderTextColor={colors.mutedForeground}
-            value={search}
-            onChangeText={setSearch}
-            autoFocus
-          />
+      <View style={[styles.searchWrap, { backgroundColor: colors.background }]}> 
+        <View style={[styles.searchBar, { backgroundColor: colors.card, borderColor: colors.border }]}> 
+          <Ionicons name="search" size={16} color={colors.mutedForeground} /> 
+          <TextInput 
+            style={[styles.searchInput, { color: colors.foreground }]} 
+            placeholder={t("searchByNameOrPhone")} 
+            placeholderTextColor={colors.mutedForeground} 
+            value={search} 
+            onChangeText={setSearch} 
+            autoFocus 
+          /> 
         </View>
       </View>
 
       {loading ? (
-        <View style={styles.center}>
-          <ActivityIndicator color={colors.primary} />
-        </View>
-      ) : (
-        <FlatList
-          data={users}
-          keyExtractor={(item) => item.id}
-          renderItem={({ item }) => (
-            <Pressable
-              style={styles.userRow}
-              onPress={() => openChat(item.id)}
-            >
-              <Avatar
-                uri={item.avatar_url}
-                name={item.display_name || item.phone}
-                size={52}
-                showOnline
-                isOnline={item.is_online}
-              />
-              <View style={styles.userInfo}>
-                <Text style={[styles.userName, { color: colors.foreground }]}>
-                  {item.display_name || item.phone}
-                </Text>
-              </View>
+        <View style={styles.center}> 
+          <ActivityIndicator color={colors.primary} /> 
+        </View> 
+      ) : ( 
+        <FlatList 
+          data={users} 
+          keyExtractor={(item) => item.id} 
+          renderItem={({ item }) => ( 
+            <Pressable 
+              style={styles.userRow} 
+              onPress={() => openChat(item.id)} 
+            > 
+              <Avatar 
+                uri={item.avatar_url} 
+                name={item.display_name || item.phone} 
+                size={52} 
+                showOnline 
+                isOnline={item.is_online} 
+              /> 
+              <View style={styles.userInfo}> 
+                <Text style={[styles.userName, { color: colors.foreground }]}> 
+                  {item.display_name || item.phone} 
+                </Text> 
+              </View> 
 
-              {creating === item.id && (
-                <ActivityIndicator color={colors.primary} size="small" />
-              )}
-            </Pressable>
-          )}
-        />
-      )}
-    </View>
-  );
-}
+              {creating === item.id && ( 
+                <ActivityIndicator color={colors.primary} size="small" /> 
+              )} 
+            </Pressable> 
+          )} 
+        /> 
+      )} 
+    </View> 
+  ); 
+} 
 
-const styles = StyleSheet.create({
-  container: { flex: 1 },
-  header: { flexDirection: "row", alignItems: "center", paddingHorizontal: 16, paddingBottom: 14 },
-  backBtn: { padding: 4 },
-  headerTitle: { color: "white", fontSize: 20, fontWeight: "700" },
-  searchWrap: { padding: 12 },
-  searchBar: { flexDirection: "row", alignItems: "center", borderRadius: 24, paddingHorizontal: 14, height: 42, borderWidth: 1.5 },
-  searchInput: { flex: 1 },
-  center: { flex: 1, justifyContent: "center", alignItems: "center" },
-  userRow: { flexDirection: "row", alignItems: "center", padding: 12 },
-  userInfo: { marginLeft: 10 },
-  userName: { fontSize: 16 },
+const styles = StyleSheet.create({ 
+  container: { flex: 1 }, 
+  header: { flexDirection: "row", alignItems: "center", paddingHorizontal: 16, paddingBottom: 14 }, 
+  backBtn: { padding: 4 }, 
+  headerTitle: { color: "white", fontSize: 20, fontWeight: "700" }, 
+  searchWrap: { padding: 12 }, 
+  searchBar: { flexDirection: "row", alignItems: "center", borderRadius: 24, paddingHorizontal: 14, height: 42, borderWidth: 1.5 }, 
+  searchInput: { flex: 1 }, 
+  center: { flex: 1, justifyContent: "center", alignItems: "center" }, 
+  userRow: { flexDirection: "row", alignItems: "center", padding: 12 }, 
+  userInfo: { marginLeft: 10 }, 
+  userName: { fontSize: 16 }, 
 });
